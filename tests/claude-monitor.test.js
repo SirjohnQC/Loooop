@@ -68,3 +68,43 @@ test('backoff constants hold the agreed schedule', () => {
   assert.equal(monitor.STALL_RESET_MS, 300_000);
   assert.equal(monitor.NUDGE, 'continue\r');
 });
+
+test('tracker walks the backoff schedule then gives up on the 4th stall', () => {
+  const tracker = monitor.createStallTracker();
+  assert.deepEqual(tracker.onStall(), { action: 'retry', delayMs: 30_000, attempt: 1 });
+  assert.deepEqual(tracker.onStall(), { action: 'retry', delayMs: 120_000, attempt: 2 });
+  assert.deepEqual(tracker.onStall(), { action: 'retry', delayMs: 300_000, attempt: 3 });
+  assert.deepEqual(tracker.onStall(), { action: 'give-up', attempts: 3 });
+});
+
+test('tracker keeps giving up once the budget is spent', () => {
+  const tracker = monitor.createStallTracker();
+  tracker.onStall();
+  tracker.onStall();
+  tracker.onStall();
+  tracker.onStall();
+  assert.deepEqual(tracker.onStall(), { action: 'give-up', attempts: 3 });
+});
+
+test('a stall-free interval restores the full budget', () => {
+  const tracker = monitor.createStallTracker();
+  tracker.onStall();
+  tracker.onStall();
+  tracker.onQuiet();
+  assert.deepEqual(tracker.onStall(), { action: 'retry', delayMs: 30_000, attempt: 1 });
+});
+
+test('reset clears the counter for user takeover', () => {
+  const tracker = monitor.createStallTracker();
+  tracker.onStall();
+  assert.equal(tracker.attempt, 1);
+  tracker.reset();
+  assert.equal(tracker.attempt, 0);
+});
+
+test('trackers are independent of one another', () => {
+  const a = monitor.createStallTracker();
+  const b = monitor.createStallTracker();
+  a.onStall();
+  assert.equal(b.attempt, 0);
+});

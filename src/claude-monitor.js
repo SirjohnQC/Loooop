@@ -58,6 +58,23 @@ const BACKOFF_MS = [30_000, 120_000, 300_000];
 const STALL_RESET_MS = 300_000;
 const NUDGE = 'continue\r';
 
+// Holds the retry budget for one supervised session. Deliberately timer-free:
+// the caller schedules the wait and reports back what happened.
+function createStallTracker() {
+  let attempt = 0;
+  return {
+    get attempt() { return attempt; },
+    onStall() {
+      if (attempt >= BACKOFF_MS.length) return { action: 'give-up', attempts: attempt };
+      const delayMs = BACKOFF_MS[attempt];
+      attempt += 1;
+      return { action: 'retry', delayMs, attempt };
+    },
+    onQuiet() { attempt = 0; },
+    reset() { attempt = 0; }
+  };
+}
+
 module.exports = {
   parseResetTime,
   detectRateLimit,
@@ -65,6 +82,7 @@ module.exports = {
   atRateLimitMenu,
   resolveClaudeCommand,
   detectStall,
+  createStallTracker,
   BACKOFF_MS,
   STALL_RESET_MS,
   NUDGE
