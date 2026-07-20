@@ -1,10 +1,13 @@
-const { app, Menu, Tray, BrowserWindow, nativeImage, dialog, shell, ipcMain } = require('electron');
+const { app, Menu, Tray, BrowserWindow, nativeImage, dialog, shell, ipcMain, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const pty = require('node-pty');
-const { parseResetTime, detectRateLimit, atRateLimitMenu, resolveClaudeCommand } = require('./claude-monitor');
+const {
+  parseResetTime, detectRateLimit, atRateLimitMenu, resolveClaudeCommand,
+  detectStall, createStallTracker, STALL_RESET_MS, NUDGE
+} = require('./claude-monitor');
 
 let tray;
 let terminalWindow;
@@ -14,6 +17,10 @@ let resetAt = null;
 let countdownTimer;
 let lastOutput = '';
 let waitMenuConfirmed = false;
+const stallTracker = createStallTracker();
+let stallHandled = false;
+let retryTimer = null;
+let stallResetTimer = null;
 const logFile = path.join(app.getPath('userData'), 'claude-resume.log');
 const favoritesFile = path.join(app.getPath('userData'), 'favorite-projects.json');
 const iconPath = path.join(__dirname, '..', 'assets', 'claude-resume.png');
@@ -35,6 +42,7 @@ function waitForReset(text) {
   const detectedReset = parseResetTime(text);
   if (!detectedReset) return;
   resetAt = detectedReset;
+  cancelRetry();
   setState('Waiting');
   log(`Rate limit detected; waiting until ${resetAt.toISOString()}`);
   countdownTimer = setInterval(() => {
@@ -58,6 +66,72 @@ function resumeSession() {
   startClaude(['--continue']);
 }
 
+function clearStallTimers() {
+  if (retryTimer) clearTimeout(retryTimer);
+  if (stallResetTimer) clearTimeout(stallResetTimer);
+  retryTimer = null;
+  stallResetTimer = null;
+}
+
+// Abandon automated recovery. Any explicit user takeover restores a full budget.
+function cancelRetry() {
+  const wasPending = !!retryTimer;
+  clearStallTimers();
+  stallTracker.reset();
+  stallHandled = false;
+  if (wasPending) {
+    log('Stall retry cancelled.');
+    if (currentState === 'Retrying') setState(terminal ? 'Running' : 'Stopped');
+  }
+}
+
+function giveUpOnStall(attempts) {
+  clearStallTimers();
+  stallHandled = false;
+  setState('Stalled');
+  log(`Stall recovery exhausted after ${attempts} attempts; leaving the session interactive.`);
+  if (Notification.isSupported()) {
+    new Notification({
+      title: 'Claude Resume — recovery failed',
+      body: `The session stalled ${attempts + 1} times. It is still open and waiting for you.`,
+      icon: iconPath
+    }).show();
+  }
+}
+
+function handleStall() {
+  // The stall notice lingers in lastOutput, so latch AND clear the buffer:
+  // the latch alone would re-fire the moment it is released.
+  stallHandled = true;
+  lastOutput = '';
+
+  const decision = stallTracker.onStall();
+  if (decision.action === 'give-up') {
+    giveUpOnStall(decision.attempts);
+    return;
+  }
+
+  setState('Retrying');
+  log(`Stall detected; retry ${decision.attempt} in ${decision.delayMs / 1000}s.`);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (!terminal) {
+      log('Session exited during backoff; abandoning stall recovery.');
+      stallHandled = false;
+      return;
+    }
+    terminal.write(NUDGE);
+    setState('Running');
+    stallHandled = false;
+    // A quiet interval means the session recovered — restore the full budget.
+    stallResetTimer = setTimeout(() => {
+      stallResetTimer = null;
+      stallTracker.onQuiet();
+      log('Session stable; stall retry budget restored.');
+    }, STALL_RESET_MS);
+  }, decision.delayMs);
+}
+
 function startClaude(args = []) {
   if (terminal) {
     dialog.showMessageBox({ type: 'info', message: 'Claude Resume is already running.' });
@@ -67,6 +141,9 @@ function startClaude(args = []) {
   const command = resolveClaudeCommand();
   lastOutput = '';
   waitMenuConfirmed = false;
+  clearStallTimers();
+  stallTracker.reset();
+  stallHandled = false;
   openTerminalWindow();
   terminal = pty.spawn(command, args, {
     name: 'xterm-color',
@@ -80,6 +157,7 @@ function startClaude(args = []) {
   terminal.onData((data) => {
     if (terminalWindow && !terminalWindow.isDestroyed()) terminalWindow.webContents.send('terminal-data', data);
     lastOutput = (lastOutput + data).slice(-12000);
+    if (!stallHandled && !resetAt && detectStall(lastOutput)) handleStall();
     if (!waitMenuConfirmed && atRateLimitMenu(lastOutput)) {
       waitMenuConfirmed = true;
       log('Rate-limit menu detected; confirming “Stop and wait for limit to reset”.');
@@ -187,6 +265,8 @@ function favoriteProjectsMenu() {
 function stopClaude() {
   if (countdownTimer) clearInterval(countdownTimer);
   countdownTimer = null;
+  clearStallTimers();
+  stallTracker.reset();
   resetAt = null;
   if (terminal) {
     terminal.kill();
@@ -216,6 +296,7 @@ function updateTray() {
     { label: 'Start Claude', click: () => startClaude() },
     { label: 'Open terminal', click: openTerminalWindow },
     { label: 'Resume now', enabled: currentState === 'Waiting', click: resumeSession },
+    { label: 'Cancel retry', enabled: !!retryTimer, click: cancelRetry },
     { label: 'Stop', enabled: !!terminal, click: stopClaude },
     { type: 'separator' },
     { label: 'Open log', click: () => shell.openPath(logFile) },
@@ -232,6 +313,7 @@ app.whenReady().then(() => {
 });
 
 ipcMain.on('terminal-input', (_event, data) => {
+  cancelRetry();
   if (terminal) terminal.write(data);
 });
 
