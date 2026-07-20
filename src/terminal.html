@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Claude Resume</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #101114; color: #e7e7e7; }
+    #terminal { box-sizing: border-box; width: 100%; height: 100%; padding: 14px; overflow: auto; white-space: pre-wrap; font: 14px Consolas, monospace; }
+    #input { position: fixed; left: 14px; right: 14px; bottom: 10px; opacity: 0; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <input id="input" autofocus>
+  <script>
+    const output = document.getElementById('terminal');
+    const input = document.getElementById('input');
+    window.claudeResume.onData((data) => {
+      output.textContent += data;
+      output.scrollTop = output.scrollHeight;
+    });
+    window.addEventListener('keydown', (event) => {
+      event.preventDefault();
+      const key = event.key === 'Enter' ? '\r' : event.key === 'Backspace' ? '\b' : event.key;
+      window.claudeResume.write(key);
+    });
+    document.body.addEventListener('click', () => input.focus());
+    input.focus();
+  </script>
+</body>
+</html>

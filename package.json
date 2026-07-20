@@ -1,0 +1,16 @@
+{
+  "name": "claude-resume",
+  "version": "0.1.0",
+  "description": "Windows tray supervisor for Claude Code sessions",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "electron": "^37.0.0"
+  }
+}
