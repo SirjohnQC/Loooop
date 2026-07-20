@@ -48,10 +48,24 @@ function resolveClaudeCommand() {
   return 'claude.cmd';
 }
 
+const STALL_RE = /API Error: Response stalled mid-stream/i;
+
+function detectStall(text) {
+  return STALL_RE.test(text);
+}
+
+const BACKOFF_MS = [30_000, 120_000, 300_000];
+const STALL_RESET_MS = 300_000;
+const NUDGE = 'continue\r';
+
 module.exports = {
   parseResetTime,
   detectRateLimit,
   detectRateLimitContext,
   atRateLimitMenu,
-  resolveClaudeCommand
+  resolveClaudeCommand,
+  detectStall,
+  BACKOFF_MS,
+  STALL_RESET_MS,
+  NUDGE
 };

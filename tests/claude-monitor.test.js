@@ -48,3 +48,23 @@ test('resolveClaudeCommand honours the override env var', () => {
     else process.env.CLAUDE_RESUME_CLAUDE_PATH = previous;
   }
 });
+
+test('detectStall matches the real stall notice', () => {
+  const notice = 'API Error: Response stalled mid-stream. The response above may be incomplete.';
+  assert.equal(monitor.detectStall(notice), true);
+});
+
+test('detectStall is case-insensitive', () => {
+  assert.equal(monitor.detectStall('api error: response STALLED mid-stream'), true);
+});
+
+test('detectStall ignores unrelated API errors', () => {
+  assert.equal(monitor.detectStall('API Error: 429 rate_limit_error'), false);
+  assert.equal(monitor.detectStall('API Error: overloaded_error'), false);
+});
+
+test('backoff constants hold the agreed schedule', () => {
+  assert.deepEqual(monitor.BACKOFF_MS, [30_000, 120_000, 300_000]);
+  assert.equal(monitor.STALL_RESET_MS, 300_000);
+  assert.equal(monitor.NUDGE, 'continue\r');
+});
