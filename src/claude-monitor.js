@@ -1,4 +1,4 @@
-// Pure detection helpers shared by src/main.js and src/claude-resume-cli.js.
+// Pure detection helpers shared by src/main.js and src/loooop-cli.js.
 // No timers, no I/O, no Electron: this module must stay importable by a plain
 // `node --test` process.
 const path = require('path');
@@ -36,7 +36,7 @@ function atRateLimitMenu(text) {
 }
 
 function resolveClaudeCommand() {
-  if (process.env.CLAUDE_RESUME_CLAUDE_PATH) return process.env.CLAUDE_RESUME_CLAUDE_PATH;
+  if (process.env.LOOOOP_CLAUDE_PATH) return process.env.LOOOOP_CLAUDE_PATH;
   if (process.platform !== 'win32') return 'claude';
   try {
     const found = execFileSync('where.exe', ['claude.exe'], { encoding: 'utf8', windowsHide: true })

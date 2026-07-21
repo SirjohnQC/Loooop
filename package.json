@@ -1,5 +1,5 @@
 {
-  "name": "claude-resume",
+  "name": "loooop",
   "version": "0.1.0",
   "description": "Windows tray supervisor for Claude Code sessions",
   "main": "src/main.js",

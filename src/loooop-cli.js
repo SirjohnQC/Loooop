@@ -12,7 +12,7 @@ const {
 } = require('./claude-monitor');
 
 const projectDir = process.cwd();
-const stateDir = path.join(process.env.APPDATA || process.env.LOCALAPPDATA || projectDir, 'claude-resume');
+const stateDir = path.join(process.env.APPDATA || process.env.LOCALAPPDATA || projectDir, 'loooop');
 const stateFile = path.join(stateDir, 'state.json');
 let child = null;
 let outputBuffer = '';
@@ -34,7 +34,7 @@ function publish(state, details = {}) {
 }
 
 function writeNotice(message) {
-  process.stdout.write(`\r\n\x1b[36m[Claude Resume] ${message}\x1b[0m\r\n`);
+  process.stdout.write(`\r\n\x1b[36m[Loooop] ${message}\x1b[0m\r\n`);
 }
 
 function scheduleResume(time) {

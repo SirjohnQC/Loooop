@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 if not exist "node_modules\electron\package.json" (
-  echo Installing Claude Resume dependencies. This only happens the first time.
+  echo Installing Loooop dependencies. This only happens the first time.
   call npm.cmd install
   if errorlevel 1 (
     echo.

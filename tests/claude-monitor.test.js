@@ -39,13 +39,13 @@ test('atRateLimitMenu matches the confirmation menu only when complete', () => {
 });
 
 test('resolveClaudeCommand honours the override env var', () => {
-  const previous = process.env.CLAUDE_RESUME_CLAUDE_PATH;
-  process.env.CLAUDE_RESUME_CLAUDE_PATH = 'C:\\custom\\claude.exe';
+  const previous = process.env.LOOOOP_CLAUDE_PATH;
+  process.env.LOOOOP_CLAUDE_PATH = 'C:\\custom\\claude.exe';
   try {
     assert.equal(monitor.resolveClaudeCommand(), 'C:\\custom\\claude.exe');
   } finally {
-    if (previous === undefined) delete process.env.CLAUDE_RESUME_CLAUDE_PATH;
-    else process.env.CLAUDE_RESUME_CLAUDE_PATH = previous;
+    if (previous === undefined) delete process.env.LOOOOP_CLAUDE_PATH;
+    else process.env.LOOOOP_CLAUDE_PATH = previous;
   }
 });
 

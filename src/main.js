@@ -20,9 +20,9 @@ const stallTracker = createStallTracker();
 let stallHandled = false;
 let retryTimer = null;
 let stallResetTimer = null;
-const logFile = path.join(app.getPath('userData'), 'claude-resume.log');
+const logFile = path.join(app.getPath('userData'), 'loooop.log');
 const favoritesFile = path.join(app.getPath('userData'), 'favorite-projects.json');
-const iconPath = path.join(__dirname, '..', 'assets', 'claude-resume.png');
+const iconPath = path.join(__dirname, '..', 'assets', 'loooop.png');
 let favoriteProjects = [];
 
 function log(message) {
@@ -105,7 +105,7 @@ function giveUpOnStall(attempts) {
   // later stall notice lands here, and an unguarded toast becomes a storm.
   if (currentState !== 'Stalled' && Notification.isSupported()) {
     new Notification({
-      title: 'Claude Resume — recovery failed',
+      title: 'Loooop — recovery failed',
       body: `Recovery failed after ${attempts} attempts. The session is still open and waiting for you.`,
       icon: iconPath
     }).show();
@@ -156,7 +156,7 @@ function handleStall() {
 
 function startClaude(args = []) {
   if (terminal) {
-    dialog.showMessageBox({ type: 'info', message: 'Claude Resume is already running.' });
+    dialog.showMessageBox({ type: 'info', message: 'Loooop is already running.' });
     return;
   }
   const command = resolveClaudeCommand();
@@ -170,7 +170,7 @@ function startClaude(args = []) {
     name: 'xterm-color',
     cols: 120,
     rows: 36,
-    cwd: process.env.CLAUDE_RESUME_PROJECT || process.cwd(),
+    cwd: process.env.LOOOOP_PROJECT || process.cwd(),
     env: process.env
   });
   setState('Running');
@@ -206,7 +206,7 @@ function openTerminalWindow() {
   terminalWindow = new BrowserWindow({
     width: 1100,
     height: 700,
-    title: 'Claude Resume',
+    title: 'Loooop',
     icon: iconPath,
     backgroundColor: '#101114',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
@@ -229,7 +229,7 @@ function saveFavoriteProjects() {
 }
 
 function startProjectTerminal(projectDir) {
-  const wrapper = path.join(__dirname, 'claude-resume-cli.js');
+  const wrapper = path.join(__dirname, 'loooop-cli.js');
   const command = `node "${wrapper}"`;
   const options = { detached: true, stdio: 'ignore', windowsHide: false };
   const terminal = spawn('wt.exe', ['-d', projectDir, 'cmd.exe', '/k', command], options);
@@ -238,7 +238,7 @@ function startProjectTerminal(projectDir) {
     fallback.unref();
   });
   terminal.unref();
-  log(`Opened Claude Resume terminal for ${projectDir}`);
+  log(`Opened Loooop terminal for ${projectDir}`);
 }
 
 async function chooseProjectFolder(title, buttonLabel) {
@@ -247,7 +247,7 @@ async function chooseProjectFolder(title, buttonLabel) {
 }
 
 async function startInProjectFolder() {
-  const projectDir = await chooseProjectFolder('Choose the project folder for Claude Resume', 'Start Claude Resume here');
+  const projectDir = await chooseProjectFolder('Choose the project folder for Loooop', 'Start Loooop here');
   if (projectDir) startProjectTerminal(projectDir);
 }
 
@@ -313,7 +313,7 @@ function formatStatus() {
 
 function updateTray() {
   if (!tray) return;
-  tray.setToolTip(`Claude Resume — ${formatStatus()}`);
+  tray.setToolTip(`Loooop — ${formatStatus()}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Status: ${formatStatus()}`, enabled: false },
     { type: 'separator' },
