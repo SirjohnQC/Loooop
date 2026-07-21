@@ -79,27 +79,41 @@ function cancelRetry() {
   clearStallTimers();
   stallTracker.reset();
   stallHandled = false;
-  if (wasPending) {
-    log('Stall retry cancelled.');
-    if (currentState === 'Retrying') setState(terminal ? 'Running' : 'Stopped');
+  // Releasing the latch without emptying the buffer would let a repainted stall
+  // notice re-trigger detection on the very next chunk.
+  lastOutput = '';
+  if (wasPending) log('Stall retry cancelled.');
+  // `Stalled` is terminal for automation but not for the session: user input
+  // returns a live session to `Running`, so this must not depend on wasPending.
+  if (currentState === 'Retrying' || currentState === 'Stalled') {
+    setState(terminal ? 'Running' : 'Stopped');
+  } else if (wasPending) {
+    // A pending retry was dropped without a state change; refresh `Cancel retry`.
+    updateTray();
   }
 }
 
 function giveUpOnStall(attempts) {
   clearStallTimers();
   stallHandled = false;
-  setState('Stalled');
+  lastOutput = '';
   log(`Stall recovery exhausted after ${attempts} attempts; leaving the session interactive.`);
-  if (Notification.isSupported()) {
+  // Notify only on the transition into Stalled: once the budget is spent every
+  // later stall notice lands here, and an unguarded toast becomes a storm.
+  if (currentState !== 'Stalled' && Notification.isSupported()) {
     new Notification({
       title: 'Claude Resume — recovery failed',
       body: `The session stalled ${attempts + 1} times. It is still open and waiting for you.`,
       icon: iconPath
     }).show();
   }
+  setState('Stalled');
 }
 
 function handleStall() {
+  // Any timer still pending from an earlier stall belongs to a superseded
+  // recovery. Clear before latching so no handle is orphaned by a re-arm.
+  clearStallTimers();
   // The stall notice lingers in lastOutput, so latch AND clear the buffer:
   // the latch alone would re-fire the moment it is released.
   stallHandled = true;
@@ -118,11 +132,16 @@ function handleStall() {
     if (!terminal) {
       log('Session exited during backoff; abandoning stall recovery.');
       stallHandled = false;
+      lastOutput = '';
+      updateTray();
       return;
     }
     terminal.write(NUDGE);
     setState('Running');
     stallHandled = false;
+    // The nudge's own echo is the next chunk; start from an empty buffer so it
+    // cannot re-match the stall notice this retry was raised for.
+    lastOutput = '';
     // A quiet interval means the session recovered — restore the full budget.
     stallResetTimer = setTimeout(() => {
       stallResetTimer = null;
@@ -157,17 +176,22 @@ function startClaude(args = []) {
   terminal.onData((data) => {
     if (terminalWindow && !terminalWindow.isDestroyed()) terminalWindow.webContents.send('terminal-data', data);
     lastOutput = (lastOutput + data).slice(-12000);
-    if (!stallHandled && !resetAt && detectStall(lastOutput)) handleStall();
     if (!waitMenuConfirmed && atRateLimitMenu(lastOutput)) {
       waitMenuConfirmed = true;
       log('Rate-limit menu detected; confirming “Stop and wait for limit to reset”.');
       setTimeout(() => terminal?.write('\r'), 250);
     }
     if (detectRateLimit(lastOutput)) waitForReset(lastOutput);
+    // Last: waitForReset sets resetAt, so a chunk carrying both signals gives
+    // the rate-limit path precedence via this guard.
+    if (!stallHandled && !resetAt && detectStall(lastOutput)) handleStall();
   });
   terminal.onExit(({ exitCode }) => {
     log(`Claude exited with code ${exitCode}`);
     terminal = null;
+    // Abandon any in-flight recovery: it belongs to the session that just died.
+    clearStallTimers();
+    stallHandled = false;
     if (!resetAt) setState('Stopped');
   });
 }
