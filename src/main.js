@@ -1,7 +1,6 @@
 const { app, Menu, Tray, BrowserWindow, nativeImage, dialog, shell, ipcMain, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const { spawn } = require('child_process');
 const pty = require('node-pty');
 const {
@@ -107,7 +106,7 @@ function giveUpOnStall(attempts) {
   if (currentState !== 'Stalled' && Notification.isSupported()) {
     new Notification({
       title: 'Claude Resume — recovery failed',
-      body: `The session stalled ${attempts + 1} times. It is still open and waiting for you.`,
+      body: `Recovery failed after ${attempts} attempts. The session is still open and waiting for you.`,
       icon: iconPath
     }).show();
   }
@@ -160,7 +159,6 @@ function startClaude(args = []) {
     dialog.showMessageBox({ type: 'info', message: 'Claude Resume is already running.' });
     return;
   }
-  const shellName = process.env.ComSpec || 'powershell.exe';
   const command = resolveClaudeCommand();
   lastOutput = '';
   waitMenuConfirmed = false;
