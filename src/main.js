@@ -80,9 +80,13 @@ function cancelRetry() {
   stallTracker.reset();
   stallHandled = false;
   // Releasing the latch without emptying the buffer would let a repainted stall
-  // notice re-trigger detection on the very next chunk.
-  lastOutput = '';
-  if (wasPending) log('Stall retry cancelled.');
+  // notice re-trigger detection on the very next chunk. Only a genuinely pending
+  // retry latched a notice, so guarding on wasPending avoids wiping the buffer on
+  // every keystroke (which could drop a mid-repaint rate-limit-menu match).
+  if (wasPending) {
+    lastOutput = '';
+    log('Stall retry cancelled.');
+  }
   // `Stalled` is terminal for automation but not for the session: user input
   // returns a live session to `Running`, so this must not depend on wasPending.
   if (currentState === 'Retrying' || currentState === 'Stalled') {
