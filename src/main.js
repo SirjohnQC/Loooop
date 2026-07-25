@@ -7,7 +7,7 @@ const {
   parseResetTime, detectRateLimit, atRateLimitMenu, resolveClaudeCommand,
   detectStall, createStallTracker, STALL_RESET_MS, NUDGE
 } = require('./claude-monitor');
-const { aggregateStatus } = require('./session-state');
+const { aggregateStatus, projectColor } = require('./session-state');
 
 let tray;
 let terminalWindow;
@@ -236,14 +236,24 @@ function saveFavoriteProjects() {
 function startProjectTerminal(projectDir) {
   const wrapper = path.join(__dirname, 'loooop-cli.js');
   const command = `node "${wrapper}"`;
+  const projectName = path.basename(projectDir) || projectDir;
+  const color = projectColor(projectName);
   const options = { detached: true, stdio: 'ignore', windowsHide: false };
-  const terminal = spawn('wt.exe', ['-d', projectDir, 'cmd.exe', '/k', command], options);
+  const terminal = spawn(
+    'wt.exe',
+    ['-d', projectDir, '--title', projectName, '--tabColor', color, 'cmd.exe', '/k', command],
+    options
+  );
   terminal.on('error', () => {
-    const fallback = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/k', `cd /d "${projectDir}" && ${command}`], options);
+    const fallback = spawn(
+      process.env.ComSpec || 'cmd.exe',
+      ['/d', '/k', `title ${projectName} && cd /d "${projectDir}" && ${command}`],
+      options
+    );
     fallback.unref();
   });
   terminal.unref();
-  log(`Opened Loooop terminal for ${projectDir}`);
+  log(`Opened Loooop terminal for ${projectDir} (${color})`);
 }
 
 async function chooseProjectFolder(title, buttonLabel) {
