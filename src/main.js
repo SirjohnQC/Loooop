@@ -415,4 +415,10 @@ ipcMain.on('terminal-input', (_event, data) => {
   if (terminal) terminal.write(data);
 });
 
+ipcMain.on('terminal-resize', (_event, size) => {
+  if (terminal && size && size.cols > 0 && size.rows > 0) {
+    try { terminal.resize(size.cols, size.rows); } catch (_) {}
+  }
+});
+
 app.on('window-all-closed', (event) => event.preventDefault());
