@@ -9,6 +9,18 @@ const {
 } = require('./claude-monitor');
 const { aggregateStatus, projectColor } = require('./session-state');
 
+// One tray process is enough; a second launch just focuses the terminal window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (terminalWindow && !terminalWindow.isDestroyed()) terminalWindow.show();
+  });
+  // The tray + xterm (DOM renderer) do not need hardware acceleration; skipping
+  // the GPU process trims idle memory. Must be called before app is ready.
+  app.disableHardwareAcceleration();
+}
+
 let tray;
 let terminalWindow;
 let terminal;
@@ -214,7 +226,7 @@ function openTerminalWindow() {
     title: 'Loooop',
     icon: iconPath,
     backgroundColor: '#101114',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: true }
   });
   terminalWindow.loadFile(path.join(__dirname, 'terminal.html'));
   terminalWindow.on('closed', () => { terminalWindow = null; });
