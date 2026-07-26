@@ -64,3 +64,23 @@ test('aggregateStatus: stalled outranks waiting; stopped ignored', () => {
   assert.equal(d.projectName, 'Zed');
   assert.equal(d.count, 2);
 });
+
+test('aggregateStatus: string embedded form with no sessions', () => {
+  const d = aggregateStatus('running', []);
+  assert.equal(d.state, 'running');
+  assert.equal(d.projectName, null);
+  assert.equal(d.count, 1);
+});
+
+test('aggregateStatus: confirming-wait outranks resuming; running outranks starting', () => {
+  const a = aggregateStatus(null, [
+    { state: 'resuming', projectDir: 'C:\\x\\R' },
+    { state: 'confirming-wait', projectDir: 'C:\\x\\C' }
+  ]);
+  assert.equal(a.state, 'confirming-wait');
+  const b = aggregateStatus(null, [
+    { state: 'starting', projectDir: 'C:\\x\\S' },
+    { state: 'running', projectDir: 'C:\\x\\U' }
+  ]);
+  assert.equal(b.state, 'running');
+});

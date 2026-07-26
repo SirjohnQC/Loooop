@@ -28,6 +28,7 @@ let currentState = 'stopped';
 let resetAt = null;
 let countdownTimer;
 let lastOutput = '';
+let lastRendererSize = null;
 let waitMenuConfirmed = false;
 const stallTracker = createStallTracker();
 let stallHandled = false;
@@ -190,6 +191,9 @@ function startClaude(args = []) {
     cwd: process.env.LOOOOP_PROJECT || process.cwd(),
     env: process.env
   });
+  if (lastRendererSize) {
+    try { terminal.resize(lastRendererSize.cols, lastRendererSize.rows); } catch (_) {}
+  }
   setState('running');
   log(`Started ${command} ${args.join(' ')}`);
   terminal.onData((data) => {
@@ -251,12 +255,12 @@ function startProjectTerminal(projectDir) {
   const projectName = path.basename(projectDir) || projectDir;
   const color = projectColor(projectName);
   const options = { detached: true, stdio: 'ignore', windowsHide: false };
-  const terminal = spawn(
+  const wtProc = spawn(
     'wt.exe',
     ['-d', projectDir, '--title', projectName, '--tabColor', color, 'cmd.exe', '/k', command],
     options
   );
-  terminal.on('error', () => {
+  wtProc.on('error', () => {
     const fallback = spawn(
       process.env.ComSpec || 'cmd.exe',
       ['/d', '/k', `title ${projectName} && cd /d "${projectDir}" && ${command}`],
@@ -264,7 +268,7 @@ function startProjectTerminal(projectDir) {
     );
     fallback.unref();
   });
-  terminal.unref();
+  wtProc.unref();
   log(`Opened Loooop terminal for ${projectDir} (${color})`);
 }
 
@@ -438,7 +442,9 @@ ipcMain.on('terminal-input', (_event, data) => {
 });
 
 ipcMain.on('terminal-resize', (_event, size) => {
-  if (terminal && size && size.cols > 0 && size.rows > 0) {
+  if (!size || !(size.cols > 0) || !(size.rows > 0)) return;
+  lastRendererSize = size;
+  if (terminal) {
     try { terminal.resize(size.cols, size.rows); } catch (_) {}
   }
 });
