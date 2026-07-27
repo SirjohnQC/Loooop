@@ -7,14 +7,28 @@ const {
   parseResetTime, detectRateLimit, atRateLimitMenu, resolveClaudeCommand,
   detectStall, createStallTracker, STALL_RESET_MS, NUDGE
 } = require('./claude-monitor');
+const { aggregateStatus, projectColor } = require('./session-state');
+
+// One tray process is enough; a second launch just focuses the terminal window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (terminalWindow && !terminalWindow.isDestroyed()) terminalWindow.show();
+  });
+  // The tray + xterm (DOM renderer) do not need hardware acceleration; skipping
+  // the GPU process trims idle memory. Must be called before app is ready.
+  app.disableHardwareAcceleration();
+}
 
 let tray;
 let terminalWindow;
 let terminal;
-let currentState = 'Stopped';
+let currentState = 'stopped';
 let resetAt = null;
 let countdownTimer;
 let lastOutput = '';
+let lastRendererSize = null;
 let waitMenuConfirmed = false;
 const stallTracker = createStallTracker();
 let stallHandled = false;
@@ -22,8 +36,14 @@ let retryTimer = null;
 let stallResetTimer = null;
 const logFile = path.join(app.getPath('userData'), 'loooop.log');
 const favoritesFile = path.join(app.getPath('userData'), 'favorite-projects.json');
+const sessionsDir = path.join(app.getPath('userData'), 'sessions');
+const SESSION_STALE_MS = 6 * 60 * 60 * 1000; // fallback prune age for pid-less files
 const iconPath = path.join(__dirname, '..', 'assets', 'loooop.png');
 let favoriteProjects = [];
+let sessions = [];
+let sessionWatcher = null;
+let watchDebounce = null;
+let uiTicker = null;
 
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
@@ -42,7 +62,7 @@ function waitForReset(text) {
   if (!detectedReset) return;
   resetAt = detectedReset;
   cancelRetry();
-  setState('Waiting');
+  setState('waiting');
   log(`Rate limit detected; waiting until ${resetAt.toISOString()}`);
   countdownTimer = setInterval(() => {
     if (Date.now() >= resetAt.getTime()) {
@@ -50,8 +70,6 @@ function waitForReset(text) {
       countdownTimer = null;
       resetAt = null;
       resumeSession();
-    } else {
-      updateTray();
     }
   }, 1000);
 }
@@ -88,8 +106,8 @@ function cancelRetry() {
   }
   // `Stalled` is terminal for automation but not for the session: user input
   // returns a live session to `Running`, so this must not depend on wasPending.
-  if (currentState === 'Retrying' || currentState === 'Stalled') {
-    setState(terminal ? 'Running' : 'Stopped');
+  if (currentState === 'retrying' || currentState === 'stalled') {
+    setState(terminal ? 'running' : 'stopped');
   } else if (wasPending) {
     // A pending retry was dropped without a state change; refresh `Cancel retry`.
     updateTray();
@@ -103,14 +121,14 @@ function giveUpOnStall(attempts) {
   log(`Stall recovery exhausted after ${attempts} attempts; leaving the session interactive.`);
   // Notify only on the transition into Stalled: once the budget is spent every
   // later stall notice lands here, and an unguarded toast becomes a storm.
-  if (currentState !== 'Stalled' && Notification.isSupported()) {
+  if (currentState !== 'stalled' && Notification.isSupported()) {
     new Notification({
       title: 'Loooop — recovery failed',
       body: `Recovery failed after ${attempts} attempts. The session is still open and waiting for you.`,
       icon: iconPath
     }).show();
   }
-  setState('Stalled');
+  setState('stalled');
 }
 
 function handleStall() {
@@ -128,7 +146,7 @@ function handleStall() {
     return;
   }
 
-  setState('Retrying');
+  setState('retrying');
   log(`Stall detected; retry ${decision.attempt} in ${decision.delayMs / 1000}s.`);
   retryTimer = setTimeout(() => {
     retryTimer = null;
@@ -140,7 +158,7 @@ function handleStall() {
       return;
     }
     terminal.write(NUDGE);
-    setState('Running');
+    setState('running');
     stallHandled = false;
     // The nudge's own echo is the next chunk; start from an empty buffer so it
     // cannot re-match the stall notice this retry was raised for.
@@ -173,7 +191,10 @@ function startClaude(args = []) {
     cwd: process.env.LOOOOP_PROJECT || process.cwd(),
     env: process.env
   });
-  setState('Running');
+  if (lastRendererSize) {
+    try { terminal.resize(lastRendererSize.cols, lastRendererSize.rows); } catch (_) {}
+  }
+  setState('running');
   log(`Started ${command} ${args.join(' ')}`);
   terminal.onData((data) => {
     if (terminalWindow && !terminalWindow.isDestroyed()) terminalWindow.webContents.send('terminal-data', data);
@@ -194,7 +215,7 @@ function startClaude(args = []) {
     // Abandon any in-flight recovery: it belongs to the session that just died.
     clearStallTimers();
     stallHandled = false;
-    if (!resetAt) setState('Stopped');
+    if (!resetAt) setState('stopped');
   });
 }
 
@@ -209,7 +230,7 @@ function openTerminalWindow() {
     title: 'Loooop',
     icon: iconPath,
     backgroundColor: '#101114',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: true }
   });
   terminalWindow.loadFile(path.join(__dirname, 'terminal.html'));
   terminalWindow.on('closed', () => { terminalWindow = null; });
@@ -231,14 +252,24 @@ function saveFavoriteProjects() {
 function startProjectTerminal(projectDir) {
   const wrapper = path.join(__dirname, 'loooop-cli.js');
   const command = `node "${wrapper}"`;
+  const projectName = path.basename(projectDir) || projectDir;
+  const color = projectColor(projectName);
   const options = { detached: true, stdio: 'ignore', windowsHide: false };
-  const terminal = spawn('wt.exe', ['-d', projectDir, 'cmd.exe', '/k', command], options);
-  terminal.on('error', () => {
-    const fallback = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/k', `cd /d "${projectDir}" && ${command}`], options);
+  const wtProc = spawn(
+    'wt.exe',
+    ['-d', projectDir, '--title', projectName, '--tabColor', color, 'cmd.exe', '/k', command],
+    options
+  );
+  wtProc.on('error', () => {
+    const fallback = spawn(
+      process.env.ComSpec || 'cmd.exe',
+      ['/d', '/k', `title ${projectName} && cd /d "${projectDir}" && ${command}`],
+      options
+    );
     fallback.unref();
   });
-  terminal.unref();
-  log(`Opened Loooop terminal for ${projectDir}`);
+  wtProc.unref();
+  log(`Opened Loooop terminal for ${projectDir} (${color})`);
 }
 
 async function chooseProjectFolder(title, buttonLabel) {
@@ -288,6 +319,51 @@ function favoriteProjectsMenu() {
   ];
 }
 
+function isProcessAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return err.code === 'EPERM'; }
+}
+
+function readSessions() {
+  let files;
+  try { files = fs.readdirSync(sessionsDir); }
+  catch (_) { return []; }
+  const now = Date.now();
+  const active = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const full = path.join(sessionsDir, file);
+    let data;
+    try { data = JSON.parse(fs.readFileSync(full, 'utf8')); }
+    catch (_) { continue; }
+    const stale = data.pid
+      ? !isProcessAlive(data.pid)
+      : !(data.updatedAt && now - new Date(data.updatedAt).getTime() < SESSION_STALE_MS);
+    if (stale) { try { fs.unlinkSync(full); } catch (_) {} continue; }
+    active.push(data);
+  }
+  return active;
+}
+
+function refreshSessions() {
+  sessions = readSessions();
+  updateTray();
+}
+
+function startSessionWatch() {
+  try { fs.mkdirSync(sessionsDir, { recursive: true }); } catch (_) {}
+  refreshSessions();
+  try {
+    sessionWatcher = fs.watch(sessionsDir, () => {
+      if (watchDebounce) clearTimeout(watchDebounce);
+      watchDebounce = setTimeout(refreshSessions, 200);
+    });
+  } catch (_) {
+    setInterval(refreshSessions, 3000);
+  }
+}
+
 function stopClaude() {
   if (countdownTimer) clearInterval(countdownTimer);
   countdownTimer = null;
@@ -298,30 +374,51 @@ function stopClaude() {
     terminal.kill();
     terminal = null;
   }
-  setState('Stopped');
+  setState('stopped');
   log('Stopped by user.');
 }
 
+function currentDisplay() {
+  const embedded = currentState !== 'stopped'
+    ? { state: currentState, resetAt: resetAt ? resetAt.toISOString() : null }
+    : null;
+  return aggregateStatus(embedded, sessions);
+}
+
 function formatStatus() {
-  if (currentState !== 'Waiting' || !resetAt) return currentState;
-  const seconds = Math.max(0, Math.ceil((resetAt - Date.now()) / 1000));
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `Waiting ${h ? `${h}h ` : ''}${m}m ${s}s`;
+  const d = currentDisplay();
+  if (d.state === 'stopped') return 'Stopped';
+  let text = d.label;
+  if (d.state === 'waiting' && d.resetAt) {
+    const seconds = Math.max(0, Math.ceil((new Date(d.resetAt).getTime() - Date.now()) / 1000));
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    text = `Waiting ${h ? `${h}h ` : ''}${m}m ${s}s`;
+  }
+  if (d.projectName) text += ` (${d.projectName})`;
+  if (d.count > 1) text += ` · ${d.count} sessions`;
+  return text;
+}
+
+function ensureTicker(active) {
+  if (active && !uiTicker) uiTicker = setInterval(updateTray, 1000);
+  if (!active && uiTicker) { clearInterval(uiTicker); uiTicker = null; }
 }
 
 function updateTray() {
   if (!tray) return;
-  tray.setToolTip(`Loooop — ${formatStatus()}`);
+  const status = formatStatus();
+  ensureTicker(currentDisplay().state === 'waiting');
+  tray.setToolTip(`Loooop — ${status}`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: `Status: ${formatStatus()}`, enabled: false },
+    { label: `Status: ${status}`, enabled: false },
     { type: 'separator' },
     { label: 'Favorite projects', submenu: favoriteProjectsMenu() },
     { label: 'Start in project folder…', click: startInProjectFolder },
     { label: 'Start Claude', click: () => startClaude() },
     { label: 'Open terminal', click: openTerminalWindow },
-    { label: 'Resume now', enabled: currentState === 'Waiting', click: resumeSession },
+    { label: 'Resume now', enabled: currentState === 'waiting', click: resumeSession },
     { label: 'Cancel retry', enabled: !!retryTimer, click: cancelRetry },
     { label: 'Stop', enabled: !!terminal, click: stopClaude },
     { type: 'separator' },
@@ -332,6 +429,7 @@ function updateTray() {
 
 app.whenReady().then(() => {
   loadFavoriteProjects();
+  startSessionWatch();
   const icon = nativeImage.createFromPath(iconPath);
   tray = new Tray(icon);
   updateTray();
@@ -341,6 +439,14 @@ app.whenReady().then(() => {
 ipcMain.on('terminal-input', (_event, data) => {
   cancelRetry();
   if (terminal) terminal.write(data);
+});
+
+ipcMain.on('terminal-resize', (_event, size) => {
+  if (!size || !(size.cols > 0) || !(size.rows > 0)) return;
+  lastRendererSize = size;
+  if (terminal) {
+    try { terminal.resize(size.cols, size.rows); } catch (_) {}
+  }
 });
 
 app.on('window-all-closed', (event) => event.preventDefault());

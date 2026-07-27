@@ -10,10 +10,11 @@ const {
   parseResetTime, detectRateLimitContext, atRateLimitMenu, resolveClaudeCommand,
   detectStall, createStallTracker, STALL_RESET_MS, NUDGE
 } = require('./claude-monitor');
+const { sessionKey } = require('./session-state');
 
 const projectDir = process.cwd();
-const stateDir = path.join(process.env.APPDATA || process.env.LOCALAPPDATA || projectDir, 'loooop');
-const stateFile = path.join(stateDir, 'state.json');
+const sessionsDir = path.join(process.env.APPDATA || process.env.LOCALAPPDATA || projectDir, 'loooop', 'sessions');
+const sessionFile = path.join(sessionsDir, `${sessionKey(projectDir)}.json`);
 let child = null;
 let outputBuffer = '';
 let resetAt = null;
@@ -29,8 +30,15 @@ let stallResetTimer = null;
 let stalledNotified = false;
 
 function publish(state, details = {}) {
-  fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(stateFile, JSON.stringify({ state, projectDir, updatedAt: new Date().toISOString(), ...details }, null, 2));
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(
+    sessionFile,
+    JSON.stringify({ state, projectDir, pid: process.pid, updatedAt: new Date().toISOString(), ...details }, null, 2)
+  );
+}
+
+function removeSessionFile() {
+  try { fs.unlinkSync(sessionFile); } catch (_) {}
 }
 
 function writeNotice(message) {
@@ -185,7 +193,6 @@ function startClaude(args = []) {
       publish('waiting', { resetAt: resetAt.toISOString() });
       return;
     }
-    publish('stopped', { exitCode });
     process.exit(exitCode || 0);
   });
 }
@@ -214,6 +221,13 @@ process.on('SIGINT', () => {
   shuttingDown = true;
   if (child) child.kill();
   else process.exit(0);
+});
+
+process.on('exit', removeSessionFile);
+
+process.stdout.on('resize', () => {
+  if (!child) return;
+  try { child.resize(process.stdout.columns || 120, process.stdout.rows || 36); } catch (_) {}
 });
 
 publish('starting');
