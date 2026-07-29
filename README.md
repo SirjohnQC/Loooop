@@ -21,7 +21,7 @@ npm start
 Loooop cannot attach to an already-running terminal session. To use your usual Windows Terminal in a project, start Claude through the wrapper instead of running `claude` directly:
 
 ```powershell
-& 'C:\Users\Sirjohn\Documents\Loooop\Loooop Here.bat'
+& 'C:\Loooop\Loooop Here.bat'
 ```
 
 Run that command while your terminal is already in the project folder. The wrapper automatically confirms Claude Code's **Stop and wait for limit to reset** option, waits for the reset time Claude displays, then resumes that project's most recent Claude session.
