@@ -24,11 +24,23 @@ function parseResetTime(text) {
 // main.js arms its rate-limit path on a broader match than the CLI does. The two
 // are deliberately kept apart so neither entry point changes behaviour.
 function detectRateLimit(text) {
-  return /rate\s*limit|usage\s*limit|limit\s+(?:to\s+)?reset|try again later|resets? at/i.test(text);
+  return /rate\s*limit|usage\s*limit|spend(?:ing)?\s*limit|weekly\s*limit|limit\s+(?:to\s+)?reset|try again later|resets? at/i.test(text);
 }
 
 function detectRateLimitContext(text) {
-  return /rate\s*limit|usage\s*limit|limit\s+(?:to\s+)?reset/i.test(text);
+  return /rate\s*limit|usage\s*limit|spend(?:ing)?\s*limit|weekly\s*limit|limit\s+(?:to\s+)?reset/i.test(text);
+}
+
+const LIMIT_POLL_MS = 15 * 60 * 1000;
+
+// Not every limit notice names a reset time — "You've hit your monthly spend
+// limit" gives nothing to count down to, yet the underlying session window may
+// reopen well before the month does. Retrying on a fixed interval beats leaving
+// the session stranded, so callers get a plan either way.
+function planLimitWait(text) {
+  if (!detectRateLimitContext(text)) return null;
+  const resetAt = parseResetTime(text);
+  return resetAt ? { mode: 'reset', resetAt } : { mode: 'poll', delayMs: LIMIT_POLL_MS };
 }
 
 function atRateLimitMenu(text) {
@@ -79,6 +91,8 @@ module.exports = {
   parseResetTime,
   detectRateLimit,
   detectRateLimitContext,
+  planLimitWait,
+  LIMIT_POLL_MS,
   atRateLimitMenu,
   resolveClaudeCommand,
   detectStall,

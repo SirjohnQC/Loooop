@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const {
-  parseResetTime, detectRateLimitContext, atRateLimitMenu, resolveClaudeCommand,
+  planLimitWait, atRateLimitMenu, resolveClaudeCommand,
   detectStall, createStallTracker, STALL_RESET_MS, NUDGE
 } = require('./claude-monitor');
 const { sessionKey } = require('./session-state');
@@ -18,8 +18,9 @@ const sessionFile = path.join(sessionsDir, `${sessionKey(projectDir)}.json`);
 let child = null;
 let outputBuffer = '';
 let resetAt = null;
+let limitMode = null;
+let limitTimer = null;
 let waitMenuConfirmed = false;
-let rateLimitContext = false;
 let resumeAfterExit = false;
 let shuttingDown = false;
 
@@ -45,17 +46,27 @@ function writeNotice(message) {
   process.stdout.write(`\r\n\x1b[36m[Loooop] ${message}\x1b[0m\r\n`);
 }
 
-function scheduleResume(time) {
-  if (resetAt || !time) return;
-  resetAt = time;
+function scheduleLimitWait(plan) {
+  if (!plan) return;
+  // A reset time can land a chunk or two after the limit notice itself, so a
+  // poll already in flight is upgraded rather than left to expire blindly. A
+  // real reset time, once known, is final.
+  if (limitMode === 'reset' || (limitMode === 'poll' && plan.mode === 'poll')) return;
+  if (limitTimer) clearTimeout(limitTimer);
   // The rate-limit path takes precedence and will respawn the session, so cancel
   // any pending nudge and reset the stall machine (clears timers, tracker budget,
   // latch and the give-up flag) before the wait is published.
   cancelRetry();
-  const delay = Math.max(0, resetAt.getTime() - Date.now()) + 5000;
-  publish('waiting', { resetAt: resetAt.toISOString() });
-  writeNotice(`Limit reset detected. I will resume this project at ${resetAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`);
-  setTimeout(resumeSession, delay);
+  limitMode = plan.mode;
+  // Poll mode has no announced reset, so its own retry deadline stands in as
+  // resetAt: the tray countdown and every resetAt guard below then work unchanged.
+  resetAt = plan.mode === 'reset' ? plan.resetAt : new Date(Date.now() + plan.delayMs);
+  const at = resetAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  publish('waiting', { resetAt: resetAt.toISOString(), limitMode });
+  writeNotice(plan.mode === 'reset'
+    ? `Limit reset detected — I will resume this project at ${at}`
+    : `Limit reached with no reset time given — I will retry at ${at}, then every ${plan.delayMs / 60000} minutes until it goes through`);
+  limitTimer = setTimeout(resumeSession, Math.max(0, resetAt.getTime() - Date.now()) + 5000);
 }
 
 function clearStallTimers() {
@@ -141,17 +152,14 @@ function handleOutput(data) {
 
   if (!waitMenuConfirmed && atRateLimitMenu(outputBuffer)) {
     waitMenuConfirmed = true;
-    rateLimitContext = true;
     publish('confirming-wait');
     writeNotice('Rate-limit menu detected. Confirming “Stop and wait for limit to reset”.');
     setTimeout(() => child?.write('\r'), 250);
   }
 
-  if (detectRateLimitContext(outputBuffer)) rateLimitContext = true;
-  const detectedReset = rateLimitContext ? parseResetTime(outputBuffer) : null;
-  if (detectedReset) scheduleResume(detectedReset);
+  scheduleLimitWait(planLimitWait(outputBuffer));
 
-  // Last: scheduleResume sets resetAt, so a chunk carrying both a stall notice
+  // Last: scheduleLimitWait sets resetAt, so a chunk carrying both a stall notice
   // and rate-limit text gives the rate-limit path precedence via the !resetAt
   // guard, which also ignores a stall seen while waiting on a reset (no live
   // session to nudge).
@@ -161,7 +169,6 @@ function handleOutput(data) {
 function startClaude(args = []) {
   outputBuffer = '';
   waitMenuConfirmed = false;
-  rateLimitContext = false;
   clearStallTimers();
   stallTracker.reset();
   stallHandled = false;
@@ -198,9 +205,12 @@ function startClaude(args = []) {
 }
 
 function resumeSession() {
+  if (limitTimer) clearTimeout(limitTimer);
+  limitTimer = null;
   resetAt = null;
+  limitMode = null;
   publish('resuming');
-  writeNotice('Usage limit should be reset. Resuming the most recent Claude session in this project.');
+  writeNotice('Retrying now — resuming the most recent Claude session in this project.');
   if (child) {
     resumeAfterExit = true;
     child.kill();
@@ -223,7 +233,19 @@ process.on('SIGINT', () => {
   else process.exit(0);
 });
 
-process.on('exit', removeSessionFile);
+// Raw mode belongs to the console, not to this process. Leaving it set hands the
+// next program in this window a console with line input and echo switched off,
+// which presents as a chat box that silently swallows every keystroke. Node's
+// own tty restore does not run on a process.exit() path, so undo it explicitly.
+function restoreConsole() {
+  try { process.stdin.setRawMode?.(false); } catch (_) {}
+  try { process.stdin.pause(); } catch (_) {}
+}
+
+process.on('exit', () => {
+  restoreConsole();
+  removeSessionFile();
+});
 
 process.stdout.on('resize', () => {
   if (!child) return;

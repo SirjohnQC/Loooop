@@ -32,6 +32,39 @@ test('detectRateLimitContext keeps the narrower CLI patterns', () => {
   assert.equal(monitor.detectRateLimitContext('please try again later'), false);
 });
 
+test('detectRateLimit matches a spend-limit notice that names no window', () => {
+  assert.equal(monitor.detectRateLimit("You've hit your monthly spend limit."), true);
+});
+
+test('detectRateLimitContext matches spend and weekly limits', () => {
+  assert.equal(monitor.detectRateLimitContext("You've hit your monthly spend limit."), true);
+  assert.equal(monitor.detectRateLimitContext("You've reached your weekly limit."), true);
+});
+
+test('planLimitWait returns a reset time when the notice carries one', () => {
+  const plan = monitor.planLimitWait('Claude usage limit reached. Your limit will reset at 2:00pm.');
+  assert.equal(plan.mode, 'reset');
+  assert.ok(plan.resetAt instanceof Date);
+  assert.equal(plan.resetAt.getHours(), 14);
+});
+
+test('planLimitWait falls back to polling when no reset time is given', () => {
+  const plan = monitor.planLimitWait("You've hit your monthly spend limit.\n/usage-credits to adjust your monthly spend limit.");
+  assert.deepEqual(plan, { mode: 'poll', delayMs: monitor.LIMIT_POLL_MS });
+});
+
+test('planLimitWait returns null when no limit was hit', () => {
+  assert.equal(monitor.planLimitWait('Reading files and thinking about it.'), null);
+});
+
+test('planLimitWait ignores a stray clock time with no limit notice', () => {
+  assert.equal(monitor.planLimitWait('The build finished at 4:15pm.'), null);
+});
+
+test('LIMIT_POLL_MS holds the agreed 15-minute retry interval', () => {
+  assert.equal(monitor.LIMIT_POLL_MS, 15 * 60 * 1000);
+});
+
 test('atRateLimitMenu matches the confirmation menu only when complete', () => {
   const menu = 'What do you want to do?\n> Stop and wait for limit to reset\nEnter to confirm';
   assert.equal(monitor.atRateLimitMenu(menu), true);

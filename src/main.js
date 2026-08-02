@@ -4,7 +4,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const pty = require('node-pty');
 const {
-  parseResetTime, detectRateLimit, atRateLimitMenu, resolveClaudeCommand,
+  planLimitWait, atRateLimitMenu, resolveClaudeCommand,
   detectStall, createStallTracker, STALL_RESET_MS, NUDGE
 } = require('./claude-monitor');
 const { aggregateStatus, projectColor } = require('./session-state');
@@ -26,6 +26,7 @@ let terminalWindow;
 let terminal;
 let currentState = 'stopped';
 let resetAt = null;
+let limitMode = null;
 let countdownTimer;
 let lastOutput = '';
 let lastRendererSize = null;
@@ -57,13 +58,22 @@ function setState(state) {
 }
 
 function waitForReset(text) {
-  if (resetAt) return;
-  const detectedReset = parseResetTime(text);
-  if (!detectedReset) return;
-  resetAt = detectedReset;
+  const plan = planLimitWait(text);
+  if (!plan) return;
+  // A reset time can land a chunk or two after the limit notice, so a poll
+  // already in flight is upgraded rather than left to expire blindly. A real
+  // reset time, once known, is final.
+  if (limitMode === 'reset' || (limitMode === 'poll' && plan.mode === 'poll')) return;
+  if (countdownTimer) clearInterval(countdownTimer);
+  limitMode = plan.mode;
+  // Poll mode has no announced reset, so its own retry deadline stands in as
+  // resetAt: the tray countdown and every resetAt guard then work unchanged.
+  resetAt = plan.mode === 'reset' ? plan.resetAt : new Date(Date.now() + plan.delayMs);
   cancelRetry();
   setState('waiting');
-  log(`Rate limit detected; waiting until ${resetAt.toISOString()}`);
+  log(plan.mode === 'reset'
+    ? `Rate limit detected; waiting until ${resetAt.toISOString()}`
+    : `Limit detected with no reset time; retrying at ${resetAt.toISOString()}`);
   countdownTimer = setInterval(() => {
     if (Date.now() >= resetAt.getTime()) {
       clearInterval(countdownTimer);
@@ -75,6 +85,7 @@ function waitForReset(text) {
 }
 
 function resumeSession() {
+  limitMode = null;
   if (terminal) {
     try { terminal.kill(); } catch (_) {}
     terminal = null;
@@ -204,7 +215,7 @@ function startClaude(args = []) {
       log('Rate-limit menu detected; confirming “Stop and wait for limit to reset”.');
       setTimeout(() => terminal?.write('\r'), 250);
     }
-    if (detectRateLimit(lastOutput)) waitForReset(lastOutput);
+    waitForReset(lastOutput);
     // Last: waitForReset sets resetAt, so a chunk carrying both signals gives
     // the rate-limit path precedence via this guard.
     if (!stallHandled && !resetAt && detectStall(lastOutput)) handleStall();
@@ -255,9 +266,13 @@ function startProjectTerminal(projectDir) {
   const projectName = path.basename(projectDir) || projectDir;
   const color = projectColor(projectName);
   const options = { detached: true, stdio: 'ignore', windowsHide: false };
+  // Without --suppressApplicationTitle, `cmd /k` and Claude Code both rewrite the
+  // console title and Windows Terminal honours that over --title, so the tab
+  // loses the project name seconds after it opens.
   const wtProc = spawn(
     'wt.exe',
-    ['-d', projectDir, '--title', projectName, '--tabColor', color, 'cmd.exe', '/k', command],
+    ['-d', projectDir, '--title', projectName, '--tabColor', color, '--suppressApplicationTitle',
+      'cmd.exe', '/k', command],
     options
   );
   wtProc.on('error', () => {
@@ -370,6 +385,7 @@ function stopClaude() {
   clearStallTimers();
   stallTracker.reset();
   resetAt = null;
+  limitMode = null;
   if (terminal) {
     terminal.kill();
     terminal = null;
